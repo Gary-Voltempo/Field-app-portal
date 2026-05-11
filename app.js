@@ -464,6 +464,7 @@ const state = {
   isDirty: false,
   isBusy: false,
   statusFilter: "All",
+  targetReportId: "",
   renderedAssets: [],
   viewerAssetIds: [],
   viewerIndex: 0,
@@ -484,6 +485,7 @@ async function init() {
   bindDom();
   bindEvents();
   bindTopbarScroll();
+  state.targetReportId = reportIdFromUrl();
   setBusy(true, "Starting");
 
   try {
@@ -1308,7 +1310,15 @@ function selectFirstReportIfNeeded() {
     return;
   }
 
-  if (!state.selectedId || !state.reports.some((r) => r.id === state.selectedId)) {
+  const targetId = state.targetReportId;
+  if (targetId && state.reports.some((report) => report.id === targetId)) {
+    state.statusFilter = "All";
+    selectReport(targetId);
+    state.targetReportId = "";
+  } else if (targetId) {
+    showToast("The report from the email link was not found in the loaded reports.", "warn");
+    state.targetReportId = "";
+  } else if (!state.selectedId || !state.reports.some((r) => r.id === state.selectedId)) {
     selectReport(state.reports[0].id);
   } else {
     selectReport(state.selectedId);
@@ -1343,6 +1353,7 @@ function selectReport(reportId) {
   state.selectedId = reportId;
   state.currentRaw = cloneJson(report.rawData || {});
   state.isDirty = false;
+  updateReportUrl(reportId);
   renderReportList();
   renderEditor();
   updateDirtyState();
@@ -2421,8 +2432,28 @@ function approvalEmailHtml(report, stage) {
           : ""
       }
     </table>
-    <p><a href="${escapeAttr(window.location.href)}">Open the Voltempo Field Application portal</a></p>
+    <p><a href="${escapeAttr(reportDeepLink(report))}">Open this report in the Voltempo Field Application portal</a></p>
   `;
+}
+
+function reportDeepLink(report) {
+  const url = new URL(authRedirectUri());
+  if (report?.id) {
+    url.searchParams.set("report", report.id);
+  }
+  return url.toString();
+}
+
+function reportIdFromUrl() {
+  const params = new URLSearchParams(window.location.search);
+  return valueToString(params.get("report")).trim();
+}
+
+function updateReportUrl(reportId) {
+  if (!window.history?.replaceState || !reportId) return;
+  const url = new URL(window.location.href);
+  url.searchParams.set("report", reportId);
+  window.history.replaceState({}, "", url.toString());
 }
 
 function workflowNotifyStage(status) {
