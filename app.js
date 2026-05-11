@@ -16,6 +16,8 @@ const ROLE_LABELS = {
   approver2: "Approver 2",
 };
 const APP_ROOT_FOLDER = "Voltempo Field Application";
+const SHARED_ROOT_LINK =
+  "https://evcpowertechcom-my.sharepoint.com/:f:/r/personal/commissioning_voltempo_com/Documents/Voltempo%20Field%20Application?csf=1&web=1&e=5alMCS";
 const BACKUPS_FOLDER = `${APP_ROOT_FOLDER}/app/backups`;
 const REPORTS_FILE = "voltempo_commissioning_reports.json";
 const LEGACY_REPORTS_FILE = "commissioning_backup.json";
@@ -497,6 +499,7 @@ const state = {
   renderedAssets: [],
   viewerAssetIds: [],
   viewerIndex: 0,
+  sharedRoot: null,
   pdfViewer: {
     document: null,
     page: 1,
@@ -837,6 +840,7 @@ async function syncReports() {
 
   try {
     const token = await getAccessToken();
+    await ensureSharedRoot(token);
     const file =
       (await downloadJsonFileRecord(token, REPORTS_FILE_PATH)) ||
       (await downloadJsonFileRecord(token, REPORTS_FILE)) ||
@@ -946,6 +950,7 @@ async function downloadJsonFileRecord(token, fileName) {
 }
 
 async function downloadJsonFile(token, fileName) {
+  await ensureSharedRoot(token);
   const response = await fetch(
     graphDriveFileContentUrl(fileName),
     {
@@ -992,7 +997,7 @@ async function hydrateReportAttachmentUrls(token, reportsFile) {
 
 async function fetchDriveItemForAttachment(token, attachment) {
   const url = attachment.driveItemId
-    ? `${GRAPH_ROOT}/me/drive/items/${encodeURIComponent(attachment.driveItemId)}`
+    ? graphDriveItemByIdUrl(attachment.driveItemId)
     : graphDriveItemUrl(normalizeAttachmentStoragePath(attachment));
 
   if (!url) return null;
@@ -1126,7 +1131,7 @@ async function findDriveItemByName(token, fileName, searchCache) {
     for (const variant of variants) {
       const escaped = variant.replace(/'/g, "''");
       const response = await fetch(
-        `${GRAPH_ROOT}/me/drive/root/search(q='${encodeURIComponent(escaped)}')?$top=25`,
+        graphDriveSearchUrl(escaped),
         {
           headers: {
             Authorization: `Bearer ${token}`,
@@ -1184,6 +1189,7 @@ function normalizeFileSearchName(value) {
 }
 
 async function uploadReportsFile(token) {
+  await ensureSharedRoot(token);
   state.reportsFile.updatedAt = new Date().toISOString();
   state.reportsFile.savedReports = state.reports;
   await ensureDriveFolderPath(token, BACKUPS_FOLDER);
@@ -1205,22 +1211,104 @@ async function uploadReportsFile(token) {
   }
 }
 
+async function ensureSharedRoot(token) {
+  if (state.sharedRoot) return state.sharedRoot;
+  if (!SHARED_ROOT_LINK) return null;
+
+  const response = await fetch(`${GRAPH_ROOT}/shares/${shareIdForUrl(SHARED_ROOT_LINK)}/driveItem`, {
+    headers: {
+      Authorization: `Bearer ${token}`,
+    },
+  });
+
+  if (!response.ok) {
+    throw new Error(await graphError(response, "Could not open shared Voltempo Field Application folder"));
+  }
+
+  const item = await response.json();
+  state.sharedRoot = {
+    driveId: item.parentReference?.driveId || item.remoteItem?.parentReference?.driveId || "",
+    itemId: item.id || item.remoteItem?.id || "",
+    name: item.name || APP_ROOT_FOLDER,
+  };
+
+  if (!state.sharedRoot.driveId || !state.sharedRoot.itemId) {
+    throw new Error("The shared OneDrive folder did not return a usable drive ID.");
+  }
+
+  return state.sharedRoot;
+}
+
+function shareIdForUrl(url) {
+  return `u!${base64UrlEncode(url)}`;
+}
+
+function base64UrlEncode(value) {
+  return btoa(value)
+    .replace(/=+$/g, "")
+    .replace(/\+/g, "-")
+    .replace(/\//g, "_");
+}
+
 function graphRootFileContentUrl(fileName) {
-  return `${GRAPH_ROOT}/me/drive/root:/${encodeURIComponent(fileName)}:/content`;
+  return graphDriveFileContentUrl(fileName);
 }
 
 function graphDriveFileContentUrl(filePath) {
-  return `${GRAPH_ROOT}/me/drive/root:/${encodeDrivePath(filePath)}:/content`;
+  return `${graphDrivePathUrl(filePath)}:/content`;
 }
 
 function graphDriveItemUrl(filePath) {
-  return `${GRAPH_ROOT}/me/drive/root:/${encodeDrivePath(filePath)}`;
+  return graphDrivePathUrl(filePath);
+}
+
+function graphDriveItemByIdUrl(itemId) {
+  if (state.sharedRoot?.driveId) {
+    return `${GRAPH_ROOT}/drives/${encodeURIComponent(state.sharedRoot.driveId)}/items/${encodeURIComponent(itemId)}`;
+  }
+  return `${GRAPH_ROOT}/me/drive/items/${encodeURIComponent(itemId)}`;
+}
+
+function graphDriveItemContentByIdUrl(itemId) {
+  return `${graphDriveItemByIdUrl(itemId)}/content`;
+}
+
+function graphDrivePathUrl(filePath) {
+  const relativePath = driveRelativePath(filePath);
+  if (state.sharedRoot?.driveId && state.sharedRoot?.itemId) {
+    const root = `${GRAPH_ROOT}/drives/${encodeURIComponent(state.sharedRoot.driveId)}/items/${encodeURIComponent(state.sharedRoot.itemId)}`;
+    return relativePath ? `${root}:/${encodeDrivePath(relativePath)}` : root;
+  }
+  return `${GRAPH_ROOT}/me/drive/root:/${encodeDrivePath(relativePath)}`;
 }
 
 function graphDriveChildrenUrl(folderPath) {
-  return folderPath
-    ? `${GRAPH_ROOT}/me/drive/root:/${encodeDrivePath(folderPath)}:/children`
+  const relativePath = driveRelativePath(folderPath);
+  if (state.sharedRoot?.driveId && state.sharedRoot?.itemId) {
+    const root = `${GRAPH_ROOT}/drives/${encodeURIComponent(state.sharedRoot.driveId)}/items/${encodeURIComponent(state.sharedRoot.itemId)}`;
+    return relativePath ? `${root}:/${encodeDrivePath(relativePath)}:/children` : `${root}/children`;
+  }
+  return relativePath
+    ? `${GRAPH_ROOT}/me/drive/root:/${encodeDrivePath(relativePath)}:/children`
     : `${GRAPH_ROOT}/me/drive/root/children`;
+}
+
+function graphDriveSearchUrl(query) {
+  const encoded = encodeURIComponent(query);
+  if (state.sharedRoot?.driveId && state.sharedRoot?.itemId) {
+    return `${GRAPH_ROOT}/drives/${encodeURIComponent(state.sharedRoot.driveId)}/items/${encodeURIComponent(state.sharedRoot.itemId)}/search(q='${encoded}')?$top=25`;
+  }
+  return `${GRAPH_ROOT}/me/drive/root/search(q='${encoded}')?$top=25`;
+}
+
+function driveRelativePath(filePath) {
+  let path = valueToString(filePath).replace(/^\/+/, "");
+  const rootPrefix = `${APP_ROOT_FOLDER}/`;
+  if (path === APP_ROOT_FOLDER) return "";
+  if (path.startsWith(rootPrefix)) {
+    path = path.slice(rootPrefix.length);
+  }
+  return path;
 }
 
 async function ensureDriveFolderPath(token, folderPath) {
@@ -2693,6 +2781,7 @@ async function handleAttachmentFileSelected(event) {
 
 async function uploadAttachmentFile(file, sourceKey) {
   const token = await getAccessToken();
+  await ensureSharedRoot(token);
   const report = selectedReport();
   const rawData = state.currentRaw || {};
   const reportType =
@@ -3005,8 +3094,9 @@ function pdfWorkerUrl(scriptUrl) {
 async function pdfDocumentSource(asset) {
   if (asset.driveItemId && state.account) {
     const token = await getAccessToken();
+    await ensureSharedRoot(token);
     const response = await fetch(
-      `${GRAPH_ROOT}/me/drive/items/${encodeURIComponent(asset.driveItemId)}/content`,
+      graphDriveItemContentByIdUrl(asset.driveItemId),
       {
         headers: {
           Authorization: `Bearer ${token}`,
@@ -3026,6 +3116,7 @@ async function pdfDocumentSource(asset) {
   const storagePath = normalizeAttachmentStoragePath(asset);
   if (storagePath && state.account) {
     const token = await getAccessToken();
+    await ensureSharedRoot(token);
     const response = await fetch(graphDriveFileContentUrl(storagePath), {
       headers: {
         Authorization: `Bearer ${token}`,
