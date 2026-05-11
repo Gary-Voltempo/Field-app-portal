@@ -2,7 +2,19 @@
 
 const CLIENT_ID = "28753d72-1ee9-450b-9946-43247f9b0a24";
 const TENANT = "voltempo.com";
-const REQUIRED_ACCOUNT = "commissioning@voltempo.com";
+const ENGINEER_EMAIL = "commissioning@voltempo.com";
+const APPROVER_1_EMAIL = "gary.grant@voltempo.com";
+const APPROVER_2_EMAIL = "duble_g@me.com";
+const AUTHORISED_ACCOUNTS = [
+  ENGINEER_EMAIL,
+  APPROVER_1_EMAIL,
+  APPROVER_2_EMAIL,
+];
+const ROLE_LABELS = {
+  engineer: "Engineer",
+  approver1: "Approver 1",
+  approver2: "Approver 2",
+};
 const APP_ROOT_FOLDER = "Voltempo Field Application";
 const BACKUPS_FOLDER = `${APP_ROOT_FOLDER}/app/backups`;
 const REPORTS_FILE = "voltempo_commissioning_reports.json";
@@ -72,7 +84,6 @@ if (menuToggle && topbarMenu) {
   });
 }
 
-const APPROVAL_EMAIL = "gary.grant@voltempo.com";
 const STATUS_OPTIONS = [
   "Draft",
   "Submitted",
@@ -91,6 +102,7 @@ const WORKFLOW_ACTIONS = {
       status: "Submitted",
       action: "Submitted for review",
       notify: "review",
+      roles: ["engineer"],
     },
   ],
   "In Progress": [
@@ -99,6 +111,7 @@ const WORKFLOW_ACTIONS = {
       status: "Submitted",
       action: "Submitted for review",
       notify: "review",
+      roles: ["engineer"],
     },
   ],
   Completed: [
@@ -107,10 +120,16 @@ const WORKFLOW_ACTIONS = {
       status: "Submitted",
       action: "Submitted for review",
       notify: "review",
+      roles: ["engineer"],
     },
   ],
   Submitted: [
-    { label: "Start Review", status: "In Review", action: "Review started" },
+    {
+      label: "Start Review",
+      status: "In Review",
+      action: "Review started",
+      roles: ["approver1"],
+    },
   ],
   "In Review": [
     {
@@ -118,12 +137,14 @@ const WORKFLOW_ACTIONS = {
       status: "Changes Requested",
       action: "Changes requested",
       notify: "changes",
+      roles: ["approver1"],
     },
     {
       label: "Approve Review",
       status: "Reviewed",
       action: "Review approved",
       notify: "final",
+      roles: ["approver1"],
     },
   ],
   "Changes Requested": [
@@ -132,6 +153,7 @@ const WORKFLOW_ACTIONS = {
       status: "Submitted",
       action: "Resubmitted for review",
       notify: "review",
+      roles: ["engineer"],
     },
   ],
   Reviewed: [
@@ -140,6 +162,7 @@ const WORKFLOW_ACTIONS = {
       status: "Final Approval",
       action: "Sent for final approval",
       notify: "final",
+      roles: ["approver1"],
     },
   ],
   "Final Approval": [
@@ -147,10 +170,16 @@ const WORKFLOW_ACTIONS = {
       label: "Final Approve",
       status: "Final Approved",
       action: "Final approval granted",
+      roles: ["approver2"],
     },
   ],
   "Final Approved": [
-    { label: "Archive", status: "Archived", action: "Archived" },
+    {
+      label: "Archive",
+      status: "Archived",
+      action: "Archived",
+      roles: ["approver2"],
+    },
   ],
 };
 
@@ -664,6 +693,22 @@ async function signIn() {
 
   try {
     await ensureMsalClient();
+    await state.msalClient.loginRedirect({
+      scopes: GRAPH_SCOPES,
+      prompt: "select_account",
+    });
+  } catch (error) {
+    showToast(error.message || String(error), "error");
+    setBusy(false);
+  }
+}
+
+async function signInWithPopup() {
+  if (state.account) return;
+  setBusy(true, "Signing in");
+
+  try {
+    await ensureMsalClient();
     const response = await state.msalClient.loginPopup({
       scopes: GRAPH_SCOPES,
       prompt: "select_account",
@@ -679,7 +724,7 @@ async function signIn() {
 
 async function activateAccount(account) {
   if (!account || !isRequiredAccount(account)) {
-    throw new Error("Please sign in with the authorised Voltempo account.");
+    throw new Error("Please sign in with an authorised approval workflow account.");
   }
 
   state.account = account;
@@ -742,12 +787,13 @@ function renderSignedOut() {
 }
 
 function accountDisplayName() {
-  return (
+  const name =
     state.account?.name ||
     state.account?.username ||
     state.account?.idTokenClaims?.preferred_username ||
-    "Signed in"
-  );
+    "Signed in";
+  const role = ROLE_LABELS[currentUserRole()];
+  return role ? `${name} (${role})` : name;
 }
 
 function renderAuthUnavailable(message) {
@@ -1550,6 +1596,8 @@ function renderWorkflowSection(report) {
     : [];
   const actions = WORKFLOW_ACTIONS[report.status || "Draft"] || [];
   const notifyStage = workflowNotifyStage(report.status || "Draft");
+  const role = currentUserRole();
+  const availableActions = actions.filter(canPerformWorkflowAction);
 
   return `
     <section class="section workflow-section">
@@ -1561,7 +1609,11 @@ function renderWorkflowSection(report) {
       </div>
       <div class="section-body workflow-body">
         <div class="workflow-actions">
-          ${actions.length ? actions.map(renderWorkflowAction).join("") : `<span class="empty-asset">No workflow actions available</span>`}
+          ${
+            availableActions.length
+              ? availableActions.map(renderWorkflowAction).join("")
+              : `<span class="empty-asset">No ${ROLE_LABELS[role] || "user"} actions available for this status</span>`
+          }
           <button class="small-button" type="button" data-action="notify-approval" data-notify-stage="${escapeAttr(notifyStage)}">
             Email Current Approver
           </button>
@@ -1573,8 +1625,10 @@ function renderWorkflowSection(report) {
           )}</textarea>
         </div>
         <div class="workflow-grid">
-          ${renderWorkflowFact("Reviewer", APPROVAL_EMAIL)}
-          ${renderWorkflowFact("Final Approver", APPROVAL_EMAIL)}
+          ${renderWorkflowFact("Your Role", ROLE_LABELS[role] || "No approval role")}
+          ${renderWorkflowFact("Engineer", ENGINEER_EMAIL)}
+          ${renderWorkflowFact("Approver 1", APPROVER_1_EMAIL)}
+          ${renderWorkflowFact("Approver 2", APPROVER_2_EMAIL)}
           ${renderWorkflowFact("Last Action", audit[0]?.action || "None yet")}
           ${renderWorkflowFact("Last Updated", audit[0]?.timestamp ? formatDateTime(audit[0].timestamp) : "Not started")}
         </div>
@@ -2278,9 +2332,11 @@ async function updateWorkflowStatus(nextStatus, actionLabel) {
   const report = selectedReport();
   if (!report || !nextStatus) return;
 
-  const workflowAction = Object.values(WORKFLOW_ACTIONS)
-    .flat()
-    .find((action) => action.status === nextStatus && action.action === actionLabel);
+  const workflowAction = workflowActionFor(report.status || "Draft", nextStatus, actionLabel);
+  if (!workflowAction || !canPerformWorkflowAction(workflowAction)) {
+    showToast("Your account cannot perform that approval step.", "error");
+    return;
+  }
 
   setBusy(true, "Updating");
 
@@ -2350,9 +2406,24 @@ function canSubmitSelectedReport() {
 
 function canSubmitReport(report) {
   if (!report) return false;
+  if (currentUserRole() !== "engineer") return false;
   return ["Draft", "In Progress", "Completed", "Changes Requested"].includes(
     report.status || "Draft",
   );
+}
+
+function workflowActionFor(currentStatus, nextStatus, actionLabel) {
+  const actions = WORKFLOW_ACTIONS[currentStatus] || [];
+  return actions.find(
+    (action) => action.status === nextStatus && action.action === actionLabel,
+  );
+}
+
+function canPerformWorkflowAction(action) {
+  if (!action) return false;
+  const allowedRoles = Array.isArray(action.roles) ? action.roles : [];
+  if (!allowedRoles.length) return true;
+  return allowedRoles.includes(currentUserRole());
 }
 
 function addWorkflowHistory(report, action, note = "") {
@@ -2371,6 +2442,7 @@ function addWorkflowHistory(report, action, note = "") {
 
 async function sendApprovalEmail(stage, token) {
   const report = selectedReport();
+  const recipient = approvalEmailForStage(stage);
   const subject =
     stage === "final"
       ? `Final approval required: ${report?.title || "Commissioning report"}`
@@ -2395,7 +2467,7 @@ async function sendApprovalEmail(stage, token) {
         toRecipients: [
           {
             emailAddress: {
-              address: APPROVAL_EMAIL,
+              address: recipient,
             },
           },
         ],
@@ -2407,6 +2479,8 @@ async function sendApprovalEmail(stage, token) {
   if (!response.ok) {
     throw new Error(await graphError(response, "Could not send approval email"));
   }
+
+  return recipient;
 }
 
 function approvalEmailHtml(report, stage) {
@@ -2462,6 +2536,12 @@ function workflowNotifyStage(status) {
   return "review";
 }
 
+function approvalEmailForStage(stage) {
+  if (stage === "final") return APPROVER_2_EMAIL;
+  if (stage === "changes") return ENGINEER_EMAIL;
+  return APPROVER_1_EMAIL;
+}
+
 function latestWorkflowNote(report) {
   const audit = Array.isArray(report?.workflowHistory)
     ? report.workflowHistory
@@ -2508,7 +2588,7 @@ function handleEditorClick(event) {
 
   if (action === "notify-approval") {
     sendApprovalEmail(target.dataset.notifyStage || "review")
-      .then(() => showToast(`Email sent to ${APPROVAL_EMAIL}.`, "success"))
+      .then((recipient) => showToast(`Email sent to ${recipient}.`, "success"))
       .catch((error) => showToast(error.message || String(error), "error"));
   }
 
@@ -3400,7 +3480,21 @@ async function graphError(response, fallback) {
 }
 
 function isRequiredAccount(account) {
-  return account.username?.toLowerCase() === REQUIRED_ACCOUNT;
+  return AUTHORISED_ACCOUNTS.includes(accountEmail(account));
+}
+
+function accountEmail(account = state.account) {
+  return valueToString(
+    account?.username || account?.idTokenClaims?.preferred_username,
+  ).toLowerCase();
+}
+
+function currentUserRole() {
+  const email = accountEmail();
+  if (email === ENGINEER_EMAIL) return "engineer";
+  if (email === APPROVER_1_EMAIL) return "approver1";
+  if (email === APPROVER_2_EMAIL) return "approver2";
+  return "";
 }
 
 function buildReportTitle(rawData) {
