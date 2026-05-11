@@ -1316,6 +1316,13 @@ function selectFirstReportIfNeeded() {
 }
 
 function handleReportListClick(event) {
+  const actionTarget = event.target.closest("[data-action]");
+  if (actionTarget?.dataset.action === "status-filter") {
+    state.statusFilter = actionTarget.dataset.status || "All";
+    renderReportList();
+    return;
+  }
+
   const item = event.target.closest("[data-report-id]");
   if (!item) return;
 
@@ -1367,6 +1374,7 @@ function renderReportList() {
 
   if (!reports.length) {
     dom.reportList.innerHTML = `
+      ${renderApprovalQueueSummary()}
       ${renderStatusFilters()}
       <div class="empty-list">No reports found</div>
     `;
@@ -1374,6 +1382,7 @@ function renderReportList() {
   }
 
   dom.reportList.innerHTML = `
+    ${renderApprovalQueueSummary()}
     ${renderStatusFilters()}
     ${reports
       .map((report) => {
@@ -1395,6 +1404,34 @@ function renderReportList() {
       `;
       })
       .join("")}
+  `;
+}
+
+function renderApprovalQueueSummary() {
+  const queueItems = [
+    { label: "To Review", status: "Submitted" },
+    { label: "In Review", status: "In Review" },
+    { label: "Changes", status: "Changes Requested" },
+    { label: "Final Sign-Off", status: "Final Approval" },
+  ];
+
+  return `
+    <div class="approval-queue" aria-label="Approval queue">
+      ${queueItems
+        .map((item) => {
+          const count = state.reports.filter(
+            (report) => (report.status || "Draft") === item.status,
+          ).length;
+          const active = state.statusFilter === item.status ? " active" : "";
+          return `
+            <button class="queue-card${active}" type="button" data-action="status-filter" data-status="${escapeAttr(item.status)}">
+              <span>${escapeHtml(item.label)}</span>
+              <strong>${count}</strong>
+            </button>
+          `;
+        })
+        .join("")}
+    </div>
   `;
 }
 
@@ -1501,6 +1538,7 @@ function renderWorkflowSection(report) {
     ? report.workflowHistory
     : [];
   const actions = WORKFLOW_ACTIONS[report.status || "Draft"] || [];
+  const notifyStage = workflowNotifyStage(report.status || "Draft");
 
   return `
     <section class="section workflow-section">
@@ -1513,9 +1551,15 @@ function renderWorkflowSection(report) {
       <div class="section-body workflow-body">
         <div class="workflow-actions">
           ${actions.length ? actions.map(renderWorkflowAction).join("") : `<span class="empty-asset">No workflow actions available</span>`}
-          <button class="small-button" type="button" data-action="notify-approval" data-notify-stage="review">
-            Email Gary
+          <button class="small-button" type="button" data-action="notify-approval" data-notify-stage="${escapeAttr(notifyStage)}">
+            Email Current Approver
           </button>
+        </div>
+        <div class="field full workflow-note">
+          <label for="workflowNote">Approval Note</label>
+          <textarea id="workflowNote" data-report-property="workflowNote" placeholder="Add review notes, requested changes, or final approval comments">${escapeHtml(
+            report.workflowNote || "",
+          )}</textarea>
         </div>
         <div class="workflow-grid">
           ${renderWorkflowFact("Reviewer", APPROVAL_EMAIL)}
@@ -2230,8 +2274,10 @@ async function updateWorkflowStatus(nextStatus, actionLabel) {
   setBusy(true, "Updating");
 
   try {
+    const note = valueToString(report.workflowNote).trim();
     report.status = nextStatus;
-    addWorkflowHistory(report, actionLabel || `Status changed to ${nextStatus}`);
+    addWorkflowHistory(report, actionLabel || `Status changed to ${nextStatus}`, note);
+    report.workflowNote = "";
     const rawData = applyCurrentReportEditsToState();
     const token = await getAccessToken();
     await uploadReportsFile(token);
@@ -2266,8 +2312,10 @@ async function submitCurrentReport() {
   setBusy(true, "Submitting");
 
   try {
+    const note = valueToString(report.workflowNote).trim();
     report.status = "Submitted";
-    addWorkflowHistory(report, "Submitted for review");
+    addWorkflowHistory(report, "Submitted for review", note);
+    report.workflowNote = "";
     const rawData = applyCurrentReportEditsToState();
     const token = await getAccessToken();
     await uploadReportsFile(token);
@@ -2358,6 +2406,8 @@ function approvalEmailHtml(report, stage) {
         ? "Changes requested"
         : "Report review required";
 
+  const latestNote = latestWorkflowNote(report);
+
   return `
     <p>${escapeHtml(heading)}</p>
     <table>
@@ -2365,9 +2415,28 @@ function approvalEmailHtml(report, stage) {
       <tr><td><strong>ID</strong></td><td>${escapeHtml(report?.id || "")}</td></tr>
       <tr><td><strong>Status</strong></td><td>${escapeHtml(report?.status || "Draft")}</td></tr>
       <tr><td><strong>Site</strong></td><td>${escapeHtml(report?.location || "")}</td></tr>
+      ${
+        latestNote
+          ? `<tr><td><strong>Latest note</strong></td><td>${escapeHtml(latestNote)}</td></tr>`
+          : ""
+      }
     </table>
     <p><a href="${escapeAttr(window.location.href)}">Open the Voltempo Field Application portal</a></p>
   `;
+}
+
+function workflowNotifyStage(status) {
+  if (status === "Reviewed" || status === "Final Approval") return "final";
+  if (status === "Changes Requested") return "changes";
+  return "review";
+}
+
+function latestWorkflowNote(report) {
+  const audit = Array.isArray(report?.workflowHistory)
+    ? report.workflowHistory
+    : [];
+  const entry = audit.find((item) => valueToString(item.note).trim());
+  return valueToString(entry?.note).trim();
 }
 
 function handleEditorClick(event) {
