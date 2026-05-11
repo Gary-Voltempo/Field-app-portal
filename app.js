@@ -26,6 +26,7 @@ const GRAPH_ROOT = "https://graph.microsoft.com/v1.0";
 const GRAPH_SCOPES = [
   "https://graph.microsoft.com/User.Read",
   "https://graph.microsoft.com/Files.ReadWrite",
+  "https://graph.microsoft.com/Files.ReadWrite.All",
   "https://graph.microsoft.com/Mail.Send",
 ];
 const MSAL_SCRIPT_URLS = [
