@@ -707,25 +707,6 @@ async function signIn() {
   }
 }
 
-async function signInWithPopup() {
-  if (state.account) return;
-  setBusy(true, "Signing in");
-
-  try {
-    await ensureMsalClient();
-    const response = await state.msalClient.loginPopup({
-      scopes: GRAPH_SCOPES,
-      prompt: "select_account",
-    });
-    await activateAccount(response.account);
-    await syncReports();
-  } catch (error) {
-    showToast(error.message || String(error), "error");
-  } finally {
-    setBusy(false);
-  }
-}
-
 async function activateAccount(account) {
   if (!account || !isRequiredAccount(account)) {
     throw new Error("Please sign in with an authorised approval workflow account.");
@@ -747,7 +728,7 @@ async function signOut() {
   renderSignedOut();
 
   if (account) {
-    await state.msalClient.logoutPopup({ account });
+    await state.msalClient.logoutRedirect({ account });
   }
 }
 
@@ -819,8 +800,8 @@ async function getAccessToken() {
     const response = await state.msalClient.acquireTokenSilent(request);
     return response.accessToken;
   } catch (error) {
-    const response = await state.msalClient.acquireTokenPopup(request);
-    return response.accessToken;
+    await state.msalClient.acquireTokenRedirect(request);
+    throw new Error("Redirecting to Microsoft sign-in for permission approval.");
   }
 }
 
